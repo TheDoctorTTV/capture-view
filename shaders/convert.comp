@@ -1,0 +1,54 @@
+#version 450
+// Converts one captured frame (RGBA, YUYV or NV12 bytes in a storage buffer)
+// into an RGBA8 image on the GPU. Replaces the old CPU colour conversion.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Source { uint words[]; } src;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D dst;
+
+layout(push_constant) uniform Params {
+  uint width;
+  uint height;
+  uint stride;     // bytes per row (luma plane for NV12)
+  uint format;     // 0 = RGBA, 1 = YUYV, 2 = NV12
+  uint uv_offset;  // byte offset of the NV12 chroma plane
+} pc;
+
+uint byte_at(uint offset) {
+  return (src.words[offset >> 2u] >> ((offset & 3u) * 8u)) & 0xFFu;
+}
+
+// BT.601 limited range, identical to the previous OpenGL shaders.
+vec3 yuv_to_rgb(float y, float u, float v) {
+  float c = y - 0.0625;
+  float d = u - 0.5;
+  float e = v - 0.5;
+  return clamp(vec3(1.1643 * c + 1.5958 * e,
+                    1.1643 * c - 0.3917 * d - 0.8129 * e,
+                    1.1643 * c + 2.0170 * d), 0.0, 1.0);
+}
+
+void main() {
+  uvec2 p = gl_GlobalInvocationID.xy;
+  if (p.x >= pc.width || p.y >= pc.height) {
+    return;
+  }
+  vec3 rgb;
+  if (pc.format == 0u) {
+    uint offset = p.y * pc.stride + p.x * 4u;
+    rgb = vec3(byte_at(offset), byte_at(offset + 1u), byte_at(offset + 2u)) / 255.0;
+  } else if (pc.format == 1u) {
+    uint base = p.y * pc.stride + (p.x & ~1u) * 2u;
+    float y = float(byte_at(base + (p.x & 1u) * 2u)) / 255.0;
+    float u = float(byte_at(base + 1u)) / 255.0;
+    float v = float(byte_at(base + 3u)) / 255.0;
+    rgb = yuv_to_rgb(y, u, v);
+  } else {
+    float y = float(byte_at(p.y * pc.stride + p.x)) / 255.0;
+    uint uv = pc.uv_offset + (p.y >> 1u) * pc.stride + (p.x & ~1u);
+    float u = float(byte_at(uv)) / 255.0;
+    float v = float(byte_at(uv + 1u)) / 255.0;
+    rgb = yuv_to_rgb(y, u, v);
+  }
+  imageStore(dst, ivec2(p), vec4(rgb, 1.0));
+}

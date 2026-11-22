@@ -31,12 +31,14 @@ jobs=${JOBS:-4}
 export CARGO_BUILD_JOBS="$jobs"
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || { printf 'JOBS must be a positive integer.\n' >&2; exit 2; }
 
-for tool in cmake ninja c++ cargo pkg-config curl install cp find sha256sum; do
+for tool in cmake ninja c++ cargo pkg-config curl glslc install cp find sha256sum; do
   command -v "$tool" >/dev/null || { printf 'Missing build tool: %s\n' "$tool" >&2; exit 1; }
 done
-pkg-config --exists sdl3 libturbojpeg libpipewire-0.3 libspa-0.2 libavcodec libavutil libswscale || {
+pkg-config --exists sdl3 libturbojpeg libpipewire-0.3 libspa-0.2 libavcodec libavutil libswscale vulkan libcurl || {
   printf 'Missing development libraries. On CachyOS/Arch install:\n' >&2
-  printf 'sudo pacman -S --needed base-devel cmake ninja pkgconf curl pipewire sdl3 libjpeg-turbo ffmpeg libglvnd rust clang libxkbcommon libxkbcommon-x11 fontconfig vulkan-icd-loader\n' >&2
+  printf 'sudo pacman -S --needed base-devel cmake ninja pkgconf curl pipewire sdl3 libjpeg-turbo ffmpeg libglvnd rust clang libxkbcommon libxkbcommon-x11 fontconfig vulkan-icd-loader vulkan-headers shaderc\n' >&2
+  printf 'On Debian/Ubuntu (e.g. in a distrobox) install:\n' >&2
+  printf 'sudo apt install build-essential ninja-build pkg-config curl file clang cargo rustc libsdl3-dev libturbojpeg0-dev libpipewire-0.3-dev libpipewire-0.3-modules libspa-0.2-dev libspa-0.2-modules libavcodec-dev libavutil-dev libswscale-dev libvulkan-dev glslc libcurl4-openssl-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxcb1-dev libegl-dev\n' >&2
   exit 1
 }
 
@@ -45,6 +47,15 @@ version=${APPIMAGE_VERSION:-$(sed -n '/^[[:space:]]*VERSION /{s/^[[:space:]]*VER
   printf 'Invalid AppImage version: %s\n' "$version" >&2; exit 2;
 }
 mkdir -p "$work_dir" "$tools_dir" "$output_dir"
+# A CMake cache made on another system (for example the host instead of a
+# distrobox) points at library paths that do not exist here. Start fresh when
+# the build system changes.
+system_id=$(. /etc/os-release 2>/dev/null; printf '%s %s %s' "${ID:-unknown}" "${VERSION_ID:-}" "$(c++ -dumpfullversion 2>/dev/null)")
+if [[ -f $work_dir/system-id && $(<"$work_dir/system-id") != "$system_id" ]]; then
+  printf 'Build system changed (%s); clearing the cached CMake configuration.\n' "$system_id"
+  rm -rf -- "$work_dir/cmake"
+fi
+printf '%s' "$system_id" > "$work_dir/system-id"
 # A fresh staging directory prevents stale libraries surviving later rebuilds.
 app_dir=$(mktemp -d "$work_dir/AppDir.XXXXXX")
 printf 'Staging directory: %s\n' "$app_dir"
@@ -87,9 +98,20 @@ set -e
 bundle_dir=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
 export LD_LIBRARY_PATH="$bundle_dir/usr/lib:$bundle_dir/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="$bundle_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-export PIPEWIRE_MODULE_DIR="$bundle_dir/usr/lib/pipewire-0.3"
-export SPA_PLUGIN_DIR="$bundle_dir/usr/lib/spa-0.2"
-export PIPEWIRE_CONFIG_DIR="$bundle_dir/usr/share/pipewire"
+# libpipewire itself always comes from the host (linuxdeploy excludes it), so
+# its modules, SPA plugins and config must come from the host too. Mixing in
+# the build machine's versions (e.g. PipeWire 1.4 plugins from a Debian
+# distrobox under a 1.6 host library) breaks audio. Use the bundled copies only
+# on hosts that have no PipeWire installation of their own.
+host_has_pipewire=0
+for dir in /usr/lib/pipewire-0.3 /usr/lib64/pipewire-0.3 /usr/lib/x86_64-linux-gnu/pipewire-0.3; do
+  [[ -d $dir ]] && host_has_pipewire=1
+done
+if [[ $host_has_pipewire == 0 ]]; then
+  export PIPEWIRE_MODULE_DIR="$bundle_dir/usr/lib/pipewire-0.3"
+  export SPA_PLUGIN_DIR="$bundle_dir/usr/lib/spa-0.2"
+  export PIPEWIRE_CONFIG_DIR="$bundle_dir/usr/share/pipewire"
+fi
 # The authorization helper re-enters the archive rather than the user-only FUSE mount.
 if [[ ${1:-} == --setup-virtual-devices ]]; then
   [[ $# == 2 ]] || exit 2

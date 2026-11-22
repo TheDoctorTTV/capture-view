@@ -9,7 +9,8 @@
 #include "h264_decoder.hpp"
 #include "log.hpp"
 #include "mjpeg_decoder.hpp"
-#include "renderer_sdl.hpp"
+#include "renderer_vulkan.hpp"
+#include "repeat_detector.hpp"
 #include "test_pattern.hpp"
 #include "v4l2_capture.hpp"
 #include "v4l2_discovery.hpp"
@@ -150,13 +151,13 @@ std::vector<CaptureConfig> capture_attempts(const CliOptions& options) {
 }
 
 std::string make_stats_text(const LoopStats& loop, const CaptureStats& capture, const RenderStats& render, bool vsync,
-                            bool opengl_backend, const AudioStats* audio = nullptr) {
-  (void)render;
+                            uint32_t frame_generation, const AudioStats* audio = nullptr) {
   std::ostringstream out;
   out << std::fixed << std::setprecision(1) << "fps " << std::setw(3) << static_cast<int>(std::round(loop.fps))
+      << "  out " << std::setw(3) << static_cast<int>(std::round(render.output_fps))
       << "  drop " << std::setw(5) << capture.dropped << "  lat " << std::setw(5) << loop.render_latency_ms << "ms"
       << "  age " << std::setw(5) << loop.frame_age_ms << "ms"
-      << "  " << (opengl_backend ? "gl " : "sdl") << "  vs " << (vsync ? "on " : "off");
+      << "  vk  vs " << (vsync ? "on " : "off") << "  fg " << frame_generation_name(frame_generation);
   if (audio != nullptr) {
     const double latency_ms =
         audio->sample_rate == 0
@@ -168,14 +169,18 @@ std::string make_stats_text(const LoopStats& loop, const CaptureStats& capture, 
 }
 
 std::vector<std::string> make_gui_lines(const CliOptions& options, const LoopStats& loop, const CaptureStats& capture,
-                                        bool opengl_backend, bool vsync, const AudioStats* audio) {
+                                        const VulkanRenderer& renderer, const AudioStats* audio) {
+  const bool vsync = renderer.vsync();
   std::vector<std::string> lines;
   lines.push_back("capture " + options.video_device + " " + std::to_string(options.size.width) + "x" +
                   std::to_string(options.size.height) + " " + std::to_string(options.fps) + "fps " +
                   to_string(options.format));
-  lines.push_back("render " + std::string(opengl_backend ? "opengl" : "sdl") + " fps " +
-                  std::to_string(static_cast<int>(loop.fps)) + " dropped " + std::to_string(capture.dropped) +
-                  " vsync " + (vsync ? "on" : "off"));
+  const RenderStats render = renderer.last_stats();
+  lines.push_back("render vulkan fps " + std::to_string(static_cast<int>(loop.fps)) + " output " +
+                  std::to_string(static_cast<int>(std::round(render.output_fps))) + " dropped " +
+                  std::to_string(capture.dropped) + " vsync " + (vsync ? "on" : "off"));
+  lines.push_back("frame generation " + renderer.frame_generation_status() + " shown " +
+                  std::to_string(render.generated_presented) + " skipped " + std::to_string(render.generated_skipped));
   lines.push_back("pacing " + options.frame_pacing + " latency-mode " +
                   (options.latency_mode.empty() ? "custom" : options.latency_mode));
   std::ostringstream timing;
@@ -268,6 +273,18 @@ RgbaFrame* decode_frame(FrameView frame, MjpegDecoder& mjpeg, H264Decoder& h264,
   return &rgba;
 }
 
+RendererOptions renderer_options(const CliOptions& options, std::string title, Size size) {
+  RendererOptions out;
+  out.title = std::move(title);
+  out.size = size;
+  out.fullscreen = options.fullscreen;
+  out.borderless = options.borderless;
+  out.vsync = options.vsync;
+  out.frame_generation = options.frame_generation;
+  out.source_fps = options.fps;
+  return out;
+}
+
 void record_render_stats(LoopStats& stats, RenderStats render) {
   stats.render_latency_ms = stats.decode_ms + render.upload_ms + render.present_ms;
 }
@@ -320,6 +337,7 @@ std::string command_summary(const CliOptions& options) {
       << " --video " << shell_quote(options.video_device) << " --size " << options.size.width << "x"
       << options.size.height << " --fps " << options.fps << " --format " << to_string(options.format)
       << " --render-backend " << shell_quote(options.render_backend) << " --frame-pacing " << options.frame_pacing
+      << " --frame-gen " << frame_generation_name(options.frame_generation)
       << " --audio-buffer-ms " << options.audio_buffer_ms;
   if (!options.video_output.empty()) {
     cmd << " --video-output " << shell_quote(options.video_output);
@@ -489,8 +507,7 @@ int run_doctor(const CliOptions& options) {
 
 int run_test_pattern(CliOptions& options) {
   const bool audio_available = select_audio_devices_if_needed(options);
-  SdlRenderer renderer(make_title(options) + " test", options.size, options.fullscreen, options.borderless,
-                       options.vsync, options.render_backend == "opengl", options.render_backend == "vulkan");
+  VulkanRenderer renderer(renderer_options(options, make_title(options) + " test", options.size));
   std::unique_ptr<V4l2Output> video_output;
   if (!options.video_output.empty()) {
     video_output = std::make_unique<V4l2Output>(
@@ -523,12 +540,12 @@ int run_test_pattern(CliOptions& options) {
     update_fps(stats);
     const AudioStats audio_stats = audio ? audio->stats() : AudioStats{};
     if (renderer.show_gui()) {
-      renderer.set_gui_lines(make_gui_lines(options, stats, {}, renderer.opengl_backend(), renderer.vsync(),
-                                            audio ? &audio_stats : nullptr));
+      renderer.set_gui_lines(make_gui_lines(options, stats, {}, renderer, audio ? &audio_stats : nullptr));
     }
     const std::string stats_text = renderer.show_stats()
                                        ? make_stats_text(stats, {}, renderer.last_stats(), renderer.vsync(),
-                                                         renderer.opengl_backend(), audio ? &audio_stats : nullptr)
+                                                         renderer.active_frame_generation(),
+                                                         audio ? &audio_stats : nullptr)
                                        : std::string{};
     renderer.render(frame, stats_text);
     record_render_stats(stats, renderer.last_stats());
@@ -538,6 +555,7 @@ int run_test_pattern(CliOptions& options) {
   options.vsync = renderer.vsync();
   options.fullscreen = renderer.fullscreen();
   options.borderless = renderer.borderless();
+  options.frame_generation = renderer.frame_generation();
   return 0;
 }
 
@@ -579,8 +597,7 @@ int run_capture(CliOptions& options) {
     throw AppError("all capture modes failed; last error: " + last_error);
   }
 
-  SdlRenderer renderer(make_title(options), capture->size(), options.fullscreen, options.borderless, options.vsync,
-                       options.render_backend == "opengl", options.render_backend == "vulkan");
+  VulkanRenderer renderer(renderer_options(options, make_title(options), capture->size()));
   std::unique_ptr<V4l2Output> video_output;
   if (!options.video_output.empty()) {
     video_output = std::make_unique<V4l2Output>(
@@ -601,6 +618,8 @@ int run_capture(CliOptions& options) {
   H264Decoder h264;
   RgbaFrame rgba;
   LoopStats stats;
+  const bool compressed = options.format == PixelFormat::Mjpeg || options.format == PixelFormat::H264;
+  RepeatDetector repeats(compressed ? 2.0 : 0.75);
   uint64_t last_tune_underruns = 0;
   uint64_t last_tune_overruns = 0;
   auto last_tune_check = Clock::now();
@@ -617,6 +636,7 @@ int run_capture(CliOptions& options) {
     apply_audio_controls(audio.get(), options, mute_requested, volume_delta, volume, muted);
     if (restart) {
       capture->restart();
+      renderer.reset_frame_generation();
       continue;
     }
     if (audio_restart && options.audio_monitor && select_audio_devices_if_needed(options)) {
@@ -661,6 +681,20 @@ int run_capture(CliOptions& options) {
     if (!can_render_raw && decoded == nullptr) {
       continue;
     }
+    // With frame generation on, drop the repeated copies a 30 fps game leaves in
+    // a 60 Hz signal so the generator interpolates between distinct frames.
+    if (renderer.active_frame_generation() > 1 || renderer.frame_generation() > 1) {
+      const bool repeat =
+          can_render_raw
+              ? repeats.is_repeat(frame->bytes.data(), raw_frame_stride(*frame),
+                                  static_cast<size_t>(frame->size.width) * (frame->format == PixelFormat::Yuyv ? 2U : 1U),
+                                  frame->size.height)
+              : repeats.is_repeat(decoded->pixels.data(), static_cast<size_t>(decoded->size.width) * 4,
+                                  static_cast<size_t>(decoded->size.width) * 4, decoded->size.height);
+      if (repeat) {
+        continue;
+      }
+    }
     ++stats.rendered;
     if (video_output) {
       if (mjpeg_output_passthrough) {
@@ -702,17 +736,16 @@ int run_capture(CliOptions& options) {
       }
     }
     if (renderer.show_gui()) {
-      renderer.set_gui_lines(make_gui_lines(options, stats, capture->stats(), renderer.opengl_backend(),
-                                            renderer.vsync(), audio ? &audio_stats : nullptr));
+      renderer.set_gui_lines(make_gui_lines(options, stats, capture->stats(), renderer, audio ? &audio_stats : nullptr));
     }
     const std::string stats_text =
         renderer.show_stats() ? make_stats_text(stats, capture->stats(), renderer.last_stats(), renderer.vsync(),
-                                                renderer.opengl_backend(), audio ? &audio_stats : nullptr)
+                                                renderer.active_frame_generation(), audio ? &audio_stats : nullptr)
                               : std::string{};
     if (can_render_raw) {
       renderer.render(*frame, stats_text);
     } else {
-      renderer.render(*decoded, stats_text);
+      renderer.render(*decoded, stats_text, frame->captured_at);
     }
     record_render_stats(stats, renderer.last_stats());
     stats.frame_age_ms =
@@ -724,6 +757,7 @@ int run_capture(CliOptions& options) {
   options.vsync = renderer.vsync();
   options.fullscreen = renderer.fullscreen();
   options.borderless = renderer.borderless();
+  options.frame_generation = renderer.frame_generation();
   return 0;
 }
 
@@ -731,6 +765,9 @@ int run_capture(CliOptions& options) {
 
 int run_app(CliOptions& options) {
   if (options.gui_info) return write_gui_info(options);
+  if (options.frame_generation_info) return write_frame_generation_info();
+  if (options.install_nvidia_runtime) return run_install_nvidia_runtime();
+  if (options.remove_nvidia_runtime) return run_remove_nvidia_runtime();
   if (options.save_only) return 0;
   if (options.gtk_ui) {
     return run_gpui_ui(options);

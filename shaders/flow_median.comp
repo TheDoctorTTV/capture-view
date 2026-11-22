@@ -1,0 +1,44 @@
+#version 450
+// 3x3 component-wise median of the finest flow level. Removes isolated wrong
+// matches and writes the motion-vector texture handed to DLSS-G.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rg32f) uniform readonly image2D src_flow;
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2D dst_mvec;
+
+layout(push_constant) uniform Params {
+  ivec2 size;
+} pc;
+
+float median9(float v[9]) {
+  // Partial selection sort: the 5th smallest value is the median.
+  for (int i = 0; i < 5; ++i) {
+    int m = i;
+    for (int j = i + 1; j < 9; ++j) {
+      if (v[j] < v[m]) m = j;
+    }
+    float t = v[i];
+    v[i] = v[m];
+    v[m] = t;
+  }
+  return v[4];
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (p.x >= pc.size.x || p.y >= pc.size.y) {
+    return;
+  }
+  float xs[9];
+  float ys[9];
+  int n = 0;
+  for (int y = -1; y <= 1; ++y) {
+    for (int x = -1; x <= 1; ++x) {
+      vec2 f = imageLoad(src_flow, clamp(p + ivec2(x, y), ivec2(0), pc.size - 1)).rg;
+      xs[n] = f.x;
+      ys[n] = f.y;
+      ++n;
+    }
+  }
+  imageStore(dst_mvec, p, vec4(median9(xs), median9(ys), 0.0, 0.0));
+}

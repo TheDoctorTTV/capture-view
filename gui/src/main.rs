@@ -9,7 +9,7 @@ use gpui::{
     Window, deferred, div, prelude::*,
     px, rgb, size, canvas, MouseButton,
 };
-use model::{Description, Mode};
+use model::{Description, FrameGenInfo, Mode};
 use std::{
     collections::{HashMap, VecDeque},
     io::{BufRead, BufReader},
@@ -39,6 +39,7 @@ enum Field {
     Pacing,
     Theme,
     Volume,
+    FrameGeneration,
 }
 #[derive(Clone, Copy)]
 enum Toggle {
@@ -60,6 +61,9 @@ enum Action {
     OpenRepo,
     OpenConfig,
     Fullscreen,
+    OpenNvidiaLicense,
+    InstallNvidiaRuntime,
+    RemoveNvidiaRuntime,
 }
 #[derive(Clone, Copy)]
 enum Kind {
@@ -68,6 +72,8 @@ enum Kind {
     Outline,
 }
 const REPO_URL: &str = "https://github.com/D35P4C1T0/capture-view";
+const NVIDIA_LICENSE_URL: &str =
+    "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt";
 const VERSION: &str = "v0.2.1";
 fn clock() -> String {
     // SAFETY: localtime_r only writes into the zeroed tm we own.
@@ -119,6 +125,9 @@ enum Event {
     SaveFailed(String),
     Error(String),
     Log(String),
+    FrameGenInfo(Result<FrameGenInfo, String>),
+    RuntimeProgress(u64, u64),
+    RuntimeFinished(Result<(), String>),
 }
 
 // Serialize background saves so an older snapshot cannot overwrite a newer one.
@@ -185,8 +194,12 @@ struct CaptureView {
     preview_image: Option<Arc<RenderImage>>,
     retired_image: Option<Arc<RenderImage>>,
     preview_size: Option<(u32,u32)>,
+    preview_rates: Option<(f32,f32)>,
     active_outputs: u32,
     logs: VecDeque<(String, String)>,
+    frame_gen: Option<FrameGenInfo>,
+    frame_gen_checking: bool,
+    runtime_busy: Option<(u64, u64)>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
 }
@@ -241,13 +254,71 @@ impl CaptureView {
             preview_image: None,
             retired_image: None,
             preview_size: None,
+            preview_rates: None,
             active_outputs: 0,
             logs: VecDeque::new(),
+            frame_gen: None,
+            frame_gen_checking: false,
+            runtime_busy: None,
             tx,
             rx,
         };
         this.refresh();
+        this.check_frame_generation();
         this
+    }
+    // Asks the engine what DLSS Frame Generation this machine supports. Creates
+    // a short-lived Vulkan device, so it runs off the UI thread.
+    fn check_frame_generation(&mut self) {
+        if self.frame_gen_checking { return; }
+        self.frame_gen_checking = true;
+        let (engine, tx) = (self.engine.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let result = Command::new(engine)
+                .arg("--frame-gen-info")
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| format!("Could not start the capture engine: {e}"))
+                .and_then(|o| {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let line = text.lines().rev().find(|l| l.trim_start().starts_with('{')).unwrap_or("");
+                    serde_json::from_str::<FrameGenInfo>(line)
+                        .map_err(|e| format!("Could not read frame generation support: {e}"))
+                });
+            let _ = tx.send(Event::FrameGenInfo(result));
+        });
+    }
+    fn install_runtime(&mut self, remove: bool) {
+        if self.runtime_busy.is_some() { return; }
+        self.runtime_busy = Some((0, 0));
+        self.status = if remove { "Removing NVIDIA runtime…".into() } else { "Downloading NVIDIA runtime…".into() };
+        let (engine, tx) = (self.engine.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let flag = if remove { "--remove-nvidia-runtime" } else { "--install-nvidia-runtime" };
+            let child = Command::new(engine).arg(flag).stdin(Stdio::null()).stdout(Stdio::piped())
+                .stderr(Stdio::null()).spawn();
+            let mut child = match child {
+                Ok(child) => child,
+                Err(e) => { let _ = tx.send(Event::RuntimeFinished(Err(format!("Could not start the engine: {e}")))); return; }
+            };
+            let mut outcome = Err("The download did not finish".to_string());
+            if let Some(stdout) = child.stdout.take() {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Some(rest) = line.strip_prefix("progress ") {
+                        let mut parts = rest.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+                        if let (Some(done), Some(total)) = (parts.next(), parts.next()) {
+                            let _ = tx.send(Event::RuntimeProgress(done, total));
+                        }
+                    } else if line == "ok" {
+                        outcome = Ok(());
+                    } else if let Some(error) = line.strip_prefix("error ") {
+                        outcome = Err(error.to_string());
+                    }
+                }
+            }
+            let _ = child.wait();
+            let _ = tx.send(Event::RuntimeFinished(outcome));
+        });
     }
     fn log(&mut self, line: String) {
         self.logs.push_back((clock(), line));
@@ -340,6 +411,36 @@ impl CaptureView {
                     self.log(error);
                 }
                 Event::Log(line) => self.log(line),
+                Event::FrameGenInfo(result) => {
+                    self.frame_gen_checking = false;
+                    match result {
+                        Ok(info) => {
+                            if let Some(d) = &mut self.description {
+                                let max = if info.available { info.max_multiplier.max(1) } else { 1 };
+                                if d.settings.frame_generation > max && info.runtime_installed {
+                                    d.settings.frame_generation = max;
+                                }
+                            }
+                            self.frame_gen = Some(info);
+                        }
+                        Err(error) => self.log(error),
+                    }
+                }
+                Event::RuntimeProgress(done, total) => self.runtime_busy = Some((done, total)),
+                Event::RuntimeFinished(result) => {
+                    self.runtime_busy = None;
+                    match result {
+                        Ok(()) => {
+                            self.status = "NVIDIA runtime updated".into();
+                            self.log(self.status.clone());
+                        }
+                        Err(error) => {
+                            self.status = format!("NVIDIA runtime: {error}");
+                            self.log(self.status.clone());
+                        }
+                    }
+                    self.check_frame_generation();
+                }
             }
         }
         self.sync_tray();
@@ -378,6 +479,7 @@ impl CaptureView {
             if preview_visible {
                 if let Some(frame) = worker.take() {
                     self.preview_size = Some((frame.width, frame.height));
+                    if frame.output_fps > 0.0 { self.preview_rates = Some((frame.input_fps, frame.output_fps)); }
                     if let Some(buffer) = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels) {
                         let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
                         if let Some(old) = self.preview_image.replace(image) { cx.drop_image(old, None); }
@@ -396,6 +498,7 @@ impl CaptureView {
         self.preview.take();
         if let Some(old) = self.preview_image.take() { self.retired_image = Some(old); }
         self.preview_size = None;
+        self.preview_rates = None;
         self.active_outputs = 0;
     }
     fn tray_available(&self) -> bool {
@@ -502,7 +605,9 @@ impl CaptureView {
             Action::Stop => self.stop(),
             Action::Clear => self.logs.clear(),
             // These need the window or app context and are handled in `button`.
-            Action::Fullscreen | Action::CopyLogs | Action::OpenRepo | Action::OpenConfig => {},
+            Action::Fullscreen | Action::CopyLogs | Action::OpenRepo | Action::OpenConfig | Action::OpenNvidiaLicense => {},
+            Action::InstallNvidiaRuntime => self.install_runtime(false),
+            Action::RemoveNvidiaRuntime => self.install_runtime(true),
             Action::Toggle(toggle) => {
                 if let Some(d) = &mut self.description {
                     let value = match toggle {
@@ -512,6 +617,15 @@ impl CaptureView {
                         Toggle::Mute => &mut d.settings.muted,
                     };
                     *value = !*value;
+                }
+                if matches!(toggle, Toggle::Preview) {
+                    // A running engine stops (or resumes) the preview copy at once.
+                    let show = self.show_preview();
+                    let failure = self.preview.as_ref()
+                        .and_then(|worker| preview::set_wanted(&worker.path, show).err());
+                    if let (Some(error), true) = (failure, self.viewer.is_some()) {
+                        self.log(format!("Could not update the preview: {error}"));
+                    }
                 }
                 self.update_preview_visibility();
                 self.sync_tray();
@@ -572,6 +686,7 @@ impl CaptureView {
             Field::Latency => d.settings.latency = value.into(),
             Field::Pacing => d.settings.pacing = value.into(),
             Field::Volume => d.settings.volume = value.parse().unwrap_or(1.0),
+            Field::FrameGeneration => d.settings.frame_generation = value.parse::<u32>().unwrap_or(1).clamp(1, 6),
             Field::Theme => {}
         }
         self.save_settings();
@@ -657,6 +772,19 @@ impl CaptureView {
                 ("1.25", "125%"),
                 ("1.5", "150%"),
             ]),
+            Field::FrameGeneration => {
+                let mut list = choices(&[("1", "Off")]);
+                let max = self.frame_gen.as_ref()
+                    .filter(|f| f.available && f.runtime_installed)
+                    .map_or(1, |f| f.max_multiplier.clamp(1, 6));
+                // Keep the saved choice visible even before support is known.
+                let max = max.max(d.settings.frame_generation.min(6));
+                for n in 2..=max {
+                    let label = if n >= 5 { format!("{n}x (experimental)") } else { format!("{n}x") };
+                    list.push(Choice { value: n.to_string(), label });
+                }
+                list
+            }
             Field::Theme => vec![],
         }
     }
@@ -689,6 +817,7 @@ impl CaptureView {
             Field::Latency => s.latency.clone(),
             Field::Pacing => s.pacing.clone(),
             Field::Volume => s.volume.to_string(),
+            Field::FrameGeneration => s.frame_generation.to_string(),
             Field::Theme => String::new(),
         }
     }
@@ -734,6 +863,11 @@ impl CaptureView {
                         this.status = "Console copied to clipboard".into();
                     }
                     Action::OpenRepo => cx.open_url(REPO_URL),
+                    Action::OpenNvidiaLicense => {
+                        let url = this.frame_gen.as_ref().map(|f| f.license_url.clone())
+                            .filter(|u| !u.is_empty()).unwrap_or_else(|| NVIDIA_LICENSE_URL.into());
+                        cx.open_url(&url);
+                    }
                     Action::OpenConfig => {
                         if let Some(d) = &this.description {
                             cx.reveal_path(std::path::Path::new(&d.config_path));
@@ -1019,6 +1153,47 @@ impl CaptureView {
             .child(label.to_owned())
             .into_any_element()
     }
+    fn frame_generation_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let p = theme::palette(self.theme);
+        let note = |text: String| div().text_sm().text_color(rgb(p.muted)).child(text);
+        let info = self.frame_gen.as_ref();
+        let installed = info.is_some_and(|f| f.runtime_installed);
+        let status = match (info, self.frame_gen_checking) {
+            (None, true) => "Checking what this GPU supports…".to_string(),
+            (None, false) => "Frame generation support is unknown.".to_string(),
+            (Some(f), _) if !f.runtime_installed => {
+                "Needs NVIDIA's DLSS Frame Generation runtime (about 7 MB), downloaded directly from NVIDIA.".to_string()
+            }
+            (Some(f), _) if !f.available => format!("Unavailable: {}", f.reason),
+            (Some(f), _) => {
+                let mfg = if f.max_multiplier > 2 { " (multi frame generation)" } else { "" };
+                format!("This GPU supports up to {}x{mfg}. 2x–4x are stable; 5x and 6x are experimental.", f.max_multiplier)
+            }
+        };
+        let mut column = div().flex().flex_col().gap_3()
+            .child(div().flex().gap_6()
+                .child(div().flex_1().min_w_0().child(self.select(Field::FrameGeneration, "Frame generation (NVIDIA DLSS)", cx)))
+                .child(div().flex_1().min_w_0()))
+            .child(note(status))
+            .child(note("Applies to the preview and every virtual camera. A 30 fps game sent at 60 Hz is detected, so 2x gives a smooth 60 fps.".into()));
+        let mut buttons = div().flex().items_center().gap_3()
+            .child(self.styled_button("nvidia-license", "View NVIDIA license", Kind::Outline, Action::OpenNvidiaLicense, cx));
+        if let Some((done, total)) = self.runtime_busy {
+            let percent = if total > 0 { done * 100 / total } else { 0 };
+            buttons = buttons.child(note(format!("Working… {percent}%")));
+        } else if installed {
+            buttons = buttons.child(self.styled_button("nvidia-remove", "Remove NVIDIA runtime", Kind::Secondary,
+                Action::RemoveNvidiaRuntime, cx));
+        } else {
+            buttons = buttons.child(self.styled_button("nvidia-install", "Accept license and download", Kind::Primary,
+                Action::InstallNvidiaRuntime, cx));
+        }
+        column = column.child(buttons);
+        if !installed {
+            column = column.child(note("By downloading you accept the NVIDIA RTX SDK license. Capture View is not affiliated with or endorsed by NVIDIA.".into()));
+        }
+        column.into_any_element()
+    }
     fn viewer_page(&self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let p = theme::palette(self.theme);
         let picture = if !self.show_preview() {
@@ -1050,7 +1225,12 @@ impl CaptureView {
         let available_height = (f32::from(self.viewer_area.height) - MARGIN * 2.0 - CONTROLS).max(0.0);
         let video_width = available_width.min(available_height * ASPECT);
         let video_height = video_width / ASPECT;
-        let dimensions = self.preview_size.map(|(w,h)|format!("{w} × {h}")).unwrap_or_else(||"Viewer".into());
+        let mut dimensions = self.preview_size.map(|(w,h)|format!("{w} × {h}")).unwrap_or_else(||"Viewer".into());
+        // Input = the game's real frame rate (repeated frames not counted);
+        // output = what the preview and virtual cameras receive, incl. generated frames.
+        if let Some((input, output)) = self.preview_rates {
+            dimensions = format!("{dimensions} · in {:.0} fps → out {:.0} fps", input, output);
+        }
         let player = div().w(px(video_width)).h(px(video_height + CONTROLS)).flex_shrink_0()
             .flex().flex_col().overflow_hidden().rounded_xl().bg(rgb(0x000000))
             .child(div().w_full().h(px(video_height)).flex_shrink_0().overflow_hidden().child(picture))
@@ -1118,6 +1298,8 @@ impl CaptureView {
                     .child(div().flex_1().min_w_0().child(self.select(Field::VirtualDevices, "Virtual video devices", cx)))
                     .child(div().flex_1().min_w_0().child(self.select(Field::Latency, "Latency", cx)))
                     .child(div().flex_1().min_w_0().child(self.select(Field::Pacing, "Frame timing", cx))))
+                .child(div().pt_2().child(self.section_label("Frame generation")))
+                .child(self.frame_generation_section(cx))
                 .child(div().pt_2().child(self.section_label("General")))
                 .child(div().flex().items_center().gap_6()
                     .child(self.toggle("Minimize to system tray", s.is_some_and(|s| s.system_tray), Toggle::Tray, "tray-toggle", cx)))

@@ -102,11 +102,37 @@ pub struct Settings {
     pub system_tray: bool,
     pub audio_monitor: bool,
     pub renderer: String,
+    // NVIDIA DLSS Frame Generation multiplier: 1 = off, 2..6.
+    #[serde(default = "default_frame_generation")]
+    pub frame_generation: u32,
     pub latency: String,
     pub pacing: String,
     pub vsync: bool,
     pub muted: bool,
     pub volume: f32,
+}
+fn default_frame_generation() -> u32 {
+    1
+}
+/// Output of `capture-view --frame-gen-info`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct FrameGenInfo {
+    pub available: bool,
+    pub max_multiplier: u32,
+    #[serde(default)]
+    pub reason: String,
+    pub runtime_installed: bool,
+    #[serde(default)]
+    pub runtime_detail: String,
+    #[serde(default)]
+    pub runtime_dir: String,
+    #[serde(default)]
+    pub sdk_version: String,
+    #[serde(default)]
+    pub license_url: String,
+}
+pub fn frame_generation_flag(multiplier: u32) -> String {
+    if multiplier <= 1 { "off".into() } else { format!("{multiplier}x") }
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct Description {
@@ -145,6 +171,7 @@ impl Description {
             ("--audio-output", s.audio_output.clone()),
             ("--render-backend", s.renderer.clone()),
             ("--frame-pacing", s.pacing.clone()),
+            ("--frame-gen", frame_generation_flag(s.frame_generation)),
             ("--volume", s.volume.to_string()),
         ] {
             args.push(flag.into());
@@ -200,5 +227,6 @@ mod tests {
         assert!(args.windows(2).any(|p| p == ["--audio-delay-ms", "25"]));
         assert!(args.windows(2).any(|p| p == ["--audio-output", "default"]));
         assert!(args.windows(2).any(|p| p == ["--render-backend", "vulkan"]));
+        assert!(args.windows(2).any(|p| p == ["--frame-gen", "off"]));
     }
 }

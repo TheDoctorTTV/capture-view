@@ -1,6 +1,8 @@
 #include "gui_bridge.hpp"
 #include "audio_devices.hpp"
 #include "config.hpp"
+#include "frame_generator.hpp"
+#include "nvidia_runtime.hpp"
 #include "v4l2_discovery.hpp"
 #include <filesystem>
 #include <iostream>
@@ -48,6 +50,7 @@ int write_gui_info(const CliOptions& o) {
       << ",\"show_preview\":" << (o.show_preview ? "true" : "false")
       << ",\"audio_monitor\":" << (o.audio_monitor ? "true" : "false")
       << ",\"renderer\":" << json(o.render_backend)
+      << ",\"frame_generation\":" << o.frame_generation
       << ",\"latency\":" << json(o.latency_mode.empty() ? "ultra" : o.latency_mode)
       << ",\"pacing\":" << json(o.frame_pacing)
       << ",\"vsync\":" << (o.vsync ? "true" : "false")
@@ -88,6 +91,43 @@ int write_gui_info(const CliOptions& o) {
   }
   out << "]}\n";
   std::cout << out.str();
+  return 0;
+}
+
+int write_frame_generation_info() {
+  const auto runtime = nvidia_runtime_status(true);
+  const FrameGenerationCaps caps = probe_frame_generation();
+  std::ostringstream out;
+  out << "{\"available\":" << (caps.available ? "true" : "false") << ",\"max_multiplier\":" << caps.max_multiplier
+      << ",\"reason\":" << json(caps.reason) << ",\"runtime_installed\":" << (runtime.installed ? "true" : "false")
+      << ",\"runtime_detail\":" << json(runtime.detail) << ",\"runtime_dir\":" << json(runtime.directory.string())
+      << ",\"sdk_version\":" << json(kNvidiaDlssSdkVersion) << ",\"license_url\":" << json(kNvidiaDlssLicenseUrl)
+      << "}\n";
+  std::cout << out.str() << std::flush;
+  return 0;
+}
+
+int run_install_nvidia_runtime() {
+  try {
+    uint64_t last_percent = 101;
+    install_nvidia_runtime([&](uint64_t done, uint64_t total) {
+      const uint64_t percent = total == 0 ? 0 : done * 100 / total;
+      if (percent != last_percent) {
+        last_percent = percent;
+        std::cout << "progress " << done << ' ' << total << '\n' << std::flush;
+      }
+    });
+    std::cout << "ok\n" << std::flush;
+    return 0;
+  } catch (const AppError& error) {
+    std::cout << "error " << error.what() << '\n' << std::flush;
+    return 1;
+  }
+}
+
+int run_remove_nvidia_runtime() {
+  remove_nvidia_runtime();
+  std::cout << "ok\n" << std::flush;
   return 0;
 }
 

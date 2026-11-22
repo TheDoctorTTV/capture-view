@@ -3,7 +3,9 @@
 //! Read through pread into owned buffers, never aliasing the producer's mapping.
 use std::{fs::File, io, os::unix::fs::FileExt, path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, thread::{self, JoinHandle}, time::Duration};
 
-pub struct Frame { pub width:u32, pub height:u32, pub pixels:Vec<u8> }
+/// `input_fps`: distinct captured frames per second (the game's real rate);
+/// `output_fps`: frames published per second, including generated ones.
+pub struct Frame { pub width:u32, pub height:u32, pub pixels:Vec<u8>, pub input_fps:f32, pub output_fps:f32 }
 struct Reader { file:File, sequence:u64 }
 fn u32_at(bytes:&[u8],offset:usize)->u32 {u32::from_le_bytes(bytes[offset..offset+4].try_into().unwrap())}
 fn u64_at(bytes:&[u8],offset:usize)->u64 {u64::from_le_bytes(bytes[offset..offset+8].try_into().unwrap())}
@@ -28,8 +30,20 @@ impl Reader {
         let mut after=[0u8;8];self.file.read_exact_at(&mut after,offset)?;
         if before!=after {return Ok(None);}
         self.sequence=sequence;
-        Ok(Some(Frame{width,height,pixels}))
+        // Header bytes 40..48 hold the frame rates in hundredths (0 = unknown).
+        let input_fps=u32_at(&header,40) as f32/100.0;let output_fps=u32_at(&header,44) as f32/100.0;
+        Ok(Some(Frame{width,height,pixels,input_fps,output_fps}))
     }
+}
+
+/// Tells the running engine whether the preview is shown ("Show video in
+/// viewer"). Header bytes 48..52; while 0 the engine produces no preview copy,
+/// freeing its VRAM and read-back memory. Virtual cameras are unaffected.
+pub fn set_wanted(path:&std::path::Path,wanted:bool)->io::Result<()> {
+    let file=std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let mut magic=[0u8;4];file.read_exact_at(&mut magic,0)?;
+    if u32::from_le_bytes(magic)!=0x31505643 {return Err(io::Error::new(io::ErrorKind::InvalidData,"not a preview file"));}
+    file.write_all_at(&u32::from(wanted).to_le_bytes(),48)
 }
 
 pub struct Worker {
@@ -92,6 +106,8 @@ mod tests {
         }
         header[24..32].copy_from_slice(&64u64.to_le_bytes());
         header[32..40].copy_from_slice(&1u64.to_le_bytes());
+        header[40..44].copy_from_slice(&3000u32.to_le_bytes());
+        header[44..48].copy_from_slice(&6000u32.to_le_bytes());
         file.write_all_at(&header,0).unwrap();
         file.write_all_at(&2u64.to_le_bytes(),192).unwrap();
         file.write_all_at(&[1,2,3,255,4,5,6,255,7,8,9,255,10,11,12,255],256).unwrap();
@@ -103,6 +119,7 @@ mod tests {
         let frame=reader.newest().unwrap().unwrap();
         assert_eq!((frame.width,frame.height),(2,2));
         assert_eq!(&frame.pixels[..4],&[1,2,3,255]);
+        assert_eq!((frame.input_fps,frame.output_fps),(30.0,60.0));
         assert!(reader.newest().unwrap().is_none());
         std::fs::remove_file(path).unwrap();
     }

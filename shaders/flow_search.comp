@@ -1,0 +1,97 @@
+#version 450
+// Coarse-to-fine block-matching motion search for one pyramid level.
+//
+// Output convention (matches DLSS Frame Generation): the vector stored at a
+// pixel of the current frame points to where that content was in the
+// previous frame, in pixels of this level: prev_pos = cur_pos + flow.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, r32f) uniform readonly image2D cur_luma;
+layout(set = 0, binding = 1, r32f) uniform readonly image2D prev_luma;
+layout(set = 0, binding = 2, rg32f) uniform readonly image2D coarse_flow;
+layout(set = 0, binding = 3, rg32f) uniform writeonly image2D out_flow;
+
+layout(push_constant) uniform Params {
+  ivec2 size;
+  ivec2 coarse_size;
+  int has_coarse;
+  int radius;        // integer search radius around the predicted vector
+  int window;        // matching window half size
+  int subpixel;      // refine the winner with a parabola fit
+  float smoothness;  // penalty per pixel of deviation from the prediction
+} pc;
+
+float cur_at(ivec2 p) { return imageLoad(cur_luma, clamp(p, ivec2(0), pc.size - 1)).r; }
+float prev_at(ivec2 p) { return imageLoad(prev_luma, clamp(p, ivec2(0), pc.size - 1)).r; }
+
+float match_cost(ivec2 p, ivec2 v) {
+  float sad = 0.0;
+  for (int y = -pc.window; y <= pc.window; ++y) {
+    for (int x = -pc.window; x <= pc.window; ++x) {
+      ivec2 o = ivec2(x, y);
+      sad += abs(cur_at(p + o) - prev_at(p + v + o));
+    }
+  }
+  float taps = float((2 * pc.window + 1) * (2 * pc.window + 1));
+  return sad / taps;
+}
+
+vec2 coarse_at(ivec2 q) {
+  q = clamp(q, ivec2(0), pc.coarse_size - 1);
+  return imageLoad(coarse_flow, q).rg * 2.0;
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (p.x >= pc.size.x || p.y >= pc.size.y) {
+    return;
+  }
+
+  ivec2 prediction = ivec2(0);
+  if (pc.has_coarse != 0) {
+    prediction = ivec2(round(coarse_at(p / 2)));
+  }
+
+  // Zero motion is always a candidate and gets a small bonus so static
+  // content (HUDs, menus, letterbox bars) stays perfectly still.
+  ivec2 best = ivec2(0);
+  float best_cost = match_cost(p, ivec2(0)) * 0.97;
+
+  for (int dy = -pc.radius; dy <= pc.radius; ++dy) {
+    for (int dx = -pc.radius; dx <= pc.radius; ++dx) {
+      ivec2 v = prediction + ivec2(dx, dy);
+      float cost = match_cost(p, v) + pc.smoothness * float(abs(dx) + abs(dy));
+      if (cost < best_cost) {
+        best_cost = cost;
+        best = v;
+      }
+    }
+  }
+
+  // Neighbouring coarse vectors help at motion boundaries.
+  if (pc.has_coarse != 0) {
+    const ivec2 offsets[4] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+    for (int i = 0; i < 4; ++i) {
+      ivec2 v = ivec2(round(coarse_at(p / 2 + offsets[i])));
+      float cost = match_cost(p, v) + pc.smoothness;
+      if (cost < best_cost) {
+        best_cost = cost;
+        best = v;
+      }
+    }
+  }
+
+  vec2 flow = vec2(best);
+  if (pc.subpixel != 0) {
+    float c0 = match_cost(p, best);
+    float cxm = match_cost(p, best - ivec2(1, 0));
+    float cxp = match_cost(p, best + ivec2(1, 0));
+    float cym = match_cost(p, best - ivec2(0, 1));
+    float cyp = match_cost(p, best + ivec2(0, 1));
+    float dx = cxm + cxp - 2.0 * c0;
+    float dy = cym + cyp - 2.0 * c0;
+    if (dx > 1e-5) flow.x += clamp(0.5 * (cxm - cxp) / dx, -0.5, 0.5);
+    if (dy > 1e-5) flow.y += clamp(0.5 * (cym - cyp) / dy, -0.5, 0.5);
+  }
+  imageStore(out_flow, p, vec4(flow, 0.0, 0.0));
+}

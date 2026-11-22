@@ -64,8 +64,20 @@ Apply preset buffer/vsync/audio-buffer settings.
 .BI --frame-pacing " immediate|yield|sleep|adaptive"
 Choose render-loop pacing. immediate never waits, yield gives the scheduler a chance after each frame, sleep targets requested FPS, adaptive sleeps then yields near the target present time.
 .TP
-.BI --render-backend " sdl|opengl|vulkan"
-Choose SDL texture presentation or explicit OpenGL shader presentation. The OpenGL backend converts raw YUYV/NV12 on the GPU.
+.BI --render-backend " vulkan"
+Linux renders with native Vulkan and converts raw YUYV/NV12 on the GPU. The old values sdl and opengl are accepted and use Vulkan.
+.TP
+.BI --frame-gen " off|2x|3x|4x|5x|6x"
+NVIDIA DLSS Frame Generation multiplier for the window, preview and virtual cameras. Needs an RTX 40 series or newer GPU and the downloaded runtime. 5x and 6x are experimental.
+.TP
+.B --frame-gen-info
+Print frame generation support and runtime state as JSON.
+.TP
+.B --install-nvidia-runtime
+Download the DLSS Frame Generation runtime from NVIDIA's GitHub into ~/.local/share/capture-view/nvidia, verified by SHA-256. Downloading accepts the NVIDIA RTX SDK license.
+.TP
+.B --remove-nvidia-runtime
+Delete the downloaded runtime.
 .TP
 .B --borderless
 Start without window decorations/titlebar for cleaner screen sharing or OBS capture.

@@ -7,9 +7,9 @@ url='https://github.com/D35P4C1T0/capture-view'
 license=('MIT')
 # makepkg records the linked FFmpeg SONAME versions in the generated package.
 # A future ABI change will require rebuilding instead of leaving a broken binary.
-depends=('pipewire' 'sdl3' 'libjpeg-turbo' 'libglvnd' 'ffmpeg' 'libxkbcommon' 'libxkbcommon-x11' 'fontconfig' 'vulkan-icd-loader'
+depends=('pipewire' 'sdl3' 'libjpeg-turbo' 'libglvnd' 'ffmpeg' 'libxkbcommon' 'libxkbcommon-x11' 'fontconfig' 'vulkan-icd-loader' 'curl'
          'libavcodec.so' 'libavutil.so' 'libswscale.so')
-makedepends=('cmake' 'ninja' 'pkgconf' 'rust' 'clang')
+makedepends=('cmake' 'ninja' 'pkgconf' 'rust' 'clang' 'vulkan-headers' 'shaderc')
 optdepends=('v4l2loopback-dkms: virtual capture devices' 'polkit: authorize virtual-device setup')
 source=()
 sha256sums=()

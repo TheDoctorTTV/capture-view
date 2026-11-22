@@ -17,8 +17,8 @@ Current features:
 - optional PipeWire audio monitor
 - optional PipeWire virtual audio source
 - optional v4l2loopback video output
-- SDL GPU-backed YUYV/NV12 texture upload path
-- optional OpenGL shader render backend
+- native Vulkan rendering with GPU YUYV/NV12 colour conversion
+- optional NVIDIA DLSS Frame Generation (2x–4x, 5x/6x experimental) for the preview and virtual cameras
 - aspect-preserving bilinear fullscreen presentation
 - Native Rust + GPUI interface for device selection, audio routing, viewer settings, themes, and logs
 - Kirsch bitmap font for SDL diagnostics overlays
@@ -40,8 +40,19 @@ Use it when you want:
 Arch Linux:
 
 ```sh
-sudo pacman -S base-devel cmake ninja pipewire sdl3 libjpeg-turbo ffmpeg libglvnd v4l-utils rust clang libxkbcommon libxkbcommon-x11 fontconfig vulkan-icd-loader
+sudo pacman -S base-devel cmake ninja pipewire sdl3 libjpeg-turbo ffmpeg libglvnd v4l-utils rust clang libxkbcommon libxkbcommon-x11 fontconfig vulkan-icd-loader vulkan-headers shaderc curl
 ```
+
+Debian/Ubuntu (for example inside a distrobox; needs a release with SDL3):
+
+```sh
+sudo apt install build-essential ninja-build pkg-config curl file clang cargo rustc libsdl3-dev libturbojpeg0-dev libpipewire-0.3-dev libpipewire-0.3-modules libspa-0.2-dev libspa-0.2-modules libavcodec-dev libavutil-dev libswscale-dev libvulkan-dev glslc libcurl4-openssl-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxcb1-dev libegl-dev
+```
+
+The first CMake configure downloads NVIDIA's NGX (DLSS) SDK headers and its
+small loader library from NVIDIA's GitHub, pinned to DLSS SDK 310.9.16 and
+checked by SHA-256. Pass `-DCAPTURE_VIEW_FRAME_GENERATION=OFF` to build without
+frame generation and without that download.
 
 ## Arch Linux / CachyOS native builds
 
@@ -200,11 +211,43 @@ Choose frame pacing explicitly:
 ./build/capture-view --video /dev/video0 --frame-pacing adaptive
 ```
 
-Use the explicit OpenGL shader backend if SDL-native texture conversion or presentation is poor on a target GPU. On AMD/Mesa this path uploads raw YUYV/NV12 planes and does color conversion in a fragment shader, avoiding the CPU RGBA conversion path for raw capture modes:
+Rendering uses Vulkan 1.3 on every GPU. Raw YUYV/NV12 frames are uploaded once
+and converted to RGB in a compute shader. `--render-backend sdl` and
+`--render-backend opengl` from older configs are accepted and use Vulkan.
+
+### Frame generation (NVIDIA DLSS)
+
+On a GeForce RTX 40 series or newer GPU, capture-view can insert generated
+frames between captured ones with NVIDIA DLSS Frame Generation. The idea follows
+[Veyra-NRVideo](https://github.com/Likely7/Veyra-NRVideo): the video is handed to
+DLSS-G as a game frame from a still camera, and capture-view estimates per-pixel
+motion vectors on the GPU. Because it works on a flat video, expect some
+artifacts around HUDs and on fast motion.
+
+1. Settings → **Frame generation** → **Accept license and download**. This fetches
+   NVIDIA's DLSS-G runtime (about 7 MB) straight from NVIDIA's GitHub into
+   `~/.local/share/capture-view/nvidia` (set `CAPTURE_VIEW_NVIDIA_DIR` to change
+   it). capture-view never ships this file.
+2. Pick a multiplier. The list shows what the driver reports: 2x on RTX 40, up
+   to 4x (plus experimental 5x/6x) on RTX 50.
+
+The same generated stream goes to the GUI preview and every virtual camera;
+conversion, generation and packing run in VRAM with one read-back per frame.
+Consoles running a game at 30 fps still send 60 Hz with each frame repeated;
+repeats are detected so 2x turns a 30 fps game into a smooth 60 fps stream.
+Streaming sites cap at 60 fps, so for streams frame generation helps most with
+30 fps games. Generated frames add up to about one captured frame of delay.
+
+CLI equivalents:
 
 ```sh
-./build/capture-view --video /dev/video0 --render-backend opengl
+./build/capture-view --install-nvidia-runtime
+./build/capture-view --frame-gen-info
+./build/capture-view --video /dev/video0 --frame-gen 2x
 ```
+
+In the standalone window, **N** cycles frame generation and the stats overlay
+(**S**) shows the output frame rate.
 
 Best latency options are raw `yuyv`/`nv12` if USB bandwidth allows, `--latency-mode ultra`, `--frame-pacing immediate`, and `--no-vsync`. The ultra preset uses two V4L2 buffers and starts PipeWire monitoring at 3 ms; audio autotune raises that buffer only when underruns require it.
 
@@ -271,8 +314,8 @@ as the audio input; the system default input is often your microphone. Select
 **System default** output to follow your usual speakers/headphones. Enable
 **Play capture audio** to hear it locally.
 
-The embedded Viewer page uses GPUI's GPU renderer. Standalone CLI viewing still
-supports SDL, Vulkan, and OpenGL through `--render-backend`. Display timing for
+The embedded Viewer page uses GPUI's GPU renderer. Standalone CLI viewing uses
+native Vulkan. Display timing for
 the embedded viewer follows the desktop compositor.
 CLI audio routes also accept `--audio-input default --audio-output default`.
 
@@ -313,9 +356,12 @@ keep running. Click the tray icon to show or hide the window; right-click for
 **Start viewer** begins capture without changing the current tab. Select Viewer
 to see the preview inside the existing GPUI window. On the Capture page, turn off
 **Show video in viewer** to hide the local picture while keeping audio playback
-and virtual video devices running. It applies immediately. Settings are saved when changed.
+and virtual video devices running. It applies immediately: the engine stops
+producing the preview copy and frees its VRAM and read-back memory, so only the
+single frame shared by all virtual cameras remains. Settings are saved when changed.
 The capture engine runs without an SDL window and publishes the newest BGRA
-frame through a three-slot shared-memory transport. Overwritten/incomplete
+frame through a three-slot shared-memory transport. Colour conversion (and frame
+generation when enabled) runs on the GPU; the CPU path is a fallback. Overwritten/incomplete
 frames are discarded instead of queued. GPUI preserves the video aspect ratio.
 The Viewer page has a fullscreen button; **F**, **F11**, and **Escape** operate
 fullscreen playback. Other pages remain available while capture and sharing run.

@@ -75,6 +75,25 @@ std::string require_value(int& index, int argc, char** argv, const char* option)
 
 } // namespace
 
+uint32_t parse_frame_generation(const std::string& value) {
+  if (value == "off" || value == "0" || value == "1" || value == "1x") {
+    return 1;
+  }
+  std::string digits = value;
+  if (!digits.empty() && (digits.back() == 'x' || digits.back() == 'X')) {
+    digits.pop_back();
+  }
+  const uint32_t multiplier = parse_u32(digits, "frame generation");
+  if (multiplier < 2 || multiplier > 6) {
+    throw AppError("--frame-gen must be off, 2x, 3x, 4x, 5x, or 6x");
+  }
+  return multiplier;
+}
+
+std::string frame_generation_name(uint32_t multiplier) {
+  return multiplier <= 1 ? "off" : std::to_string(multiplier) + "x";
+}
+
 void print_usage(const char* argv0) {
   std::cout << "Usage: " << argv0 << " [options]\n"
             << "\n"
@@ -107,7 +126,11 @@ void print_usage(const char* argv0) {
             << "  --format auto|h264|mjpeg|yuyv|nv12\n"
             << "  --latency-mode ultra|low|balanced\n"
             << "  --frame-pacing immediate|yield|sleep|adaptive\n"
-            << "  --render-backend sdl|opengl|vulkan\n"
+            << "  --render-backend vulkan (sdl/opengl are accepted and mapped to vulkan)\n"
+            << "  --frame-gen off|2x|3x|4x|5x|6x (NVIDIA DLSS Frame Generation; 5x/6x experimental)\n"
+            << "  --frame-gen-info (print frame generation support as JSON)\n"
+            << "  --install-nvidia-runtime (download the DLSS Frame Generation runtime from NVIDIA)\n"
+            << "  --remove-nvidia-runtime\n"
             << "  --fullscreen\n"
             << "  --borderless\n"
             << "  --no-vsync\n"
@@ -143,6 +166,7 @@ std::vector<std::string> viewer_arguments(const CliOptions& options) {
       "--size", std::to_string(options.size.width) + "x" + std::to_string(options.size.height),
       "--fps", std::to_string(options.fps), "--format", to_string(options.format),
       "--frame-pacing", options.frame_pacing, "--render-backend", options.render_backend,
+      "--frame-gen", frame_generation_name(options.frame_generation),
       "--buffers", std::to_string(options.buffer_count),
       "--audio-input", options.audio_input, "--audio-output", options.audio_output,
       "--audio-buffer-ms", std::to_string(options.audio_buffer_ms),
@@ -186,6 +210,14 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
       options.gtk_ui = true;
     } else if (arg == "--gui-info") {
       options.gui_info = true;
+    } else if (arg == "--frame-gen-info") {
+      options.frame_generation_info = true;
+    } else if (arg == "--install-nvidia-runtime") {
+      options.install_nvidia_runtime = true;
+    } else if (arg == "--remove-nvidia-runtime") {
+      options.remove_nvidia_runtime = true;
+    } else if (arg == "--frame-gen") {
+      options.frame_generation = parse_frame_generation(require_value(i, argc, argv, "--frame-gen"));
     } else if (arg == "--save-only") {
       options.save_only = true;
     } else if (arg == "--wizard") {
@@ -283,10 +315,16 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
         throw AppError("--frame-pacing must be immediate, yield, sleep, or adaptive");
       }
     } else if (arg == "--render-backend") {
-      options.render_backend = require_value(i, argc, argv, "--render-backend");
-      if (options.render_backend != "sdl" && options.render_backend != "opengl" && options.render_backend != "vulkan") {
-        throw AppError("--render-backend must be sdl, opengl, or vulkan");
+      const std::string backend = require_value(i, argc, argv, "--render-backend");
+      if (backend != "sdl" && backend != "opengl" && backend != "vulkan") {
+        throw AppError("--render-backend must be vulkan");
       }
+#ifdef _WIN32
+      options.render_backend = backend;
+#else
+      // Linux renders with native Vulkan only; older values stay accepted.
+      options.render_backend = "vulkan";
+#endif
     } else if (arg == "--buffers") {
       options.buffer_count = parse_u32(require_value(i, argc, argv, "--buffers"), "buffers");
       if (options.buffer_count < 2 || options.buffer_count > 3) {

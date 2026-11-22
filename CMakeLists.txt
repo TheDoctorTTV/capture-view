@@ -15,7 +15,9 @@ else()
   set(CAPTURE_VIEW_WARNINGS -Wall -Wextra -Wpedantic -Wconversion)
 endif()
 
-find_package(OpenGL REQUIRED)
+if(WIN32)
+  find_package(OpenGL REQUIRED)
+endif()
 
 if(WIN32)
   find_package(SDL3 CONFIG REQUIRED)
@@ -36,6 +38,8 @@ else()
   pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
   pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
   pkg_check_modules(SWSCALE REQUIRED IMPORTED_TARGET libswscale)
+  pkg_check_modules(VULKAN REQUIRED IMPORTED_TARGET vulkan)
+  pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 endif()
 
 set(CAPTURE_VIEW_COMMON_SOURCES
@@ -64,7 +68,14 @@ else()
     src/preview_writer.cpp
     src/h264_decoder.cpp
     src/mjpeg_decoder.cpp
-    src/renderer_sdl.cpp
+    src/frame_generator.cpp
+    src/gpu_pipeline.cpp
+    src/nvidia_runtime.cpp
+    src/renderer_vulkan.cpp
+    src/repeat_detector.cpp
+    src/sha256.cpp
+    src/vk_device.cpp
+    src/vk_util.cpp
     src/wizard.cpp
   )
 endif()
@@ -84,10 +95,9 @@ if(WIN32)
 endif()
 
 target_include_directories(capture-view PRIVATE src)
-target_link_libraries(capture-view PRIVATE OpenGL::GL)
 
 if(WIN32)
-  target_link_libraries(capture-view PRIVATE ${CAPTURE_VIEW_SDL_TARGET})
+  target_link_libraries(capture-view PRIVATE OpenGL::GL ${CAPTURE_VIEW_SDL_TARGET})
 else()
   target_link_libraries(capture-view PRIVATE
     PkgConfig::SDL3
@@ -96,7 +106,66 @@ else()
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
     PkgConfig::SWSCALE
+    PkgConfig::VULKAN
+    PkgConfig::CURL
   )
+
+  # Vulkan structs are initialised as {VK_STRUCTURE_TYPE_...}; the remaining
+  # members are intentionally zeroed.
+  set_source_files_properties(src/frame_generator.cpp src/gpu_pipeline.cpp src/renderer_vulkan.cpp src/vk_device.cpp
+    src/vk_util.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+
+  include(cmake/Shaders.cmake)
+  capture_view_add_shaders(capture-view
+    "${CMAKE_SOURCE_DIR}/shaders/convert.comp"
+    "${CMAKE_SOURCE_DIR}/shaders/present.vert"
+    "${CMAKE_SOURCE_DIR}/shaders/present.frag"
+    "${CMAKE_SOURCE_DIR}/shaders/overlay.vert"
+    "${CMAKE_SOURCE_DIR}/shaders/overlay.frag"
+    "${CMAKE_SOURCE_DIR}/shaders/flow_luma.comp"
+    "${CMAKE_SOURCE_DIR}/shaders/flow_search.comp"
+    "${CMAKE_SOURCE_DIR}/shaders/flow_median.comp"
+    "${CMAKE_SOURCE_DIR}/shaders/pack.comp")
+
+  # NVIDIA DLSS Frame Generation (NGX). See cmake/NvidiaNgxHeaders.cmake.
+  option(CAPTURE_VIEW_FRAME_GENERATION "Build NVIDIA DLSS Frame Generation support" ON)
+  set(CAPTURE_VIEW_HAVE_NGX OFF)
+  if(CAPTURE_VIEW_FRAME_GENERATION AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    include(cmake/NvidiaNgxHeaders.cmake)
+    capture_view_fetch_ngx_sdk(CAPTURE_VIEW_HAVE_NGX)
+  endif()
+  if(CAPTURE_VIEW_HAVE_NGX)
+    target_include_directories(capture-view SYSTEM PRIVATE "${CAPTURE_VIEW_NGX_INCLUDE_DIR}")
+    target_compile_definitions(capture-view PRIVATE CAPTURE_VIEW_HAVE_NGX=1)
+    target_link_libraries(capture-view PRIVATE "${CAPTURE_VIEW_NGX_LIBRARY}" ${CMAKE_DL_LIBS})
+    message(STATUS "NVIDIA DLSS Frame Generation support: enabled")
+
+    # GPU test: needs an RTX 40/50 GPU and the downloaded runtime; skipped (77)
+    # otherwise. Run: ctest -R frame-generation, or the binary with 2..6.
+    add_executable(capture-view-frame-generation-test
+      tests/frame_generation_gpu_test.cpp
+      src/frame_generator.cpp
+      src/log.cpp
+      src/nvidia_runtime.cpp
+      src/sha256.cpp
+      src/vk_device.cpp
+      src/vk_util.cpp)
+    target_include_directories(capture-view-frame-generation-test PRIVATE src)
+    target_include_directories(capture-view-frame-generation-test SYSTEM PRIVATE "${CAPTURE_VIEW_NGX_INCLUDE_DIR}")
+    target_compile_definitions(capture-view-frame-generation-test PRIVATE CAPTURE_VIEW_HAVE_NGX=1)
+    target_compile_options(capture-view-frame-generation-test PRIVATE ${CAPTURE_VIEW_WARNINGS}
+      -Wno-missing-field-initializers)
+    target_link_libraries(capture-view-frame-generation-test PRIVATE
+      PkgConfig::VULKAN PkgConfig::CURL "${CAPTURE_VIEW_NGX_LIBRARY}" ${CMAKE_DL_LIBS})
+    add_dependencies(capture-view-frame-generation-test capture-view-shaders)
+    target_include_directories(capture-view-frame-generation-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    add_test(NAME capture-view-frame-generation COMMAND capture-view-frame-generation-test 2)
+    set_tests_properties(capture-view-frame-generation PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  else()
+    target_compile_definitions(capture-view PRIVATE CAPTURE_VIEW_HAVE_NGX=0)
+    message(STATUS "NVIDIA DLSS Frame Generation support: disabled")
+  endif()
 endif()
 
 target_compile_options(capture-view PRIVATE ${CAPTURE_VIEW_WARNINGS})
@@ -108,6 +177,7 @@ add_executable(capture-view-tests
   src/config.cpp
   src/cli.cpp
   src/frame.cpp
+  src/sha256.cpp
 )
 target_include_directories(capture-view-tests PRIVATE src)
 target_compile_options(capture-view-tests PRIVATE ${CAPTURE_VIEW_WARNINGS})

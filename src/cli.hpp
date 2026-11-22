@@ -15,6 +15,9 @@ struct CliOptions {
   bool gtk_ui = false;
   bool gui_info = false;
   bool save_only = false;
+  bool frame_generation_info = false;
+  bool install_nvidia_runtime = false;
+  bool remove_nvidia_runtime = false;
   bool wizard = false;
   bool save_config = false;
   bool list_profiles = false;
@@ -47,10 +50,17 @@ struct CliOptions {
   std::string log_file;
   std::string profile;
   std::string config_file;
+#ifdef _WIN32
   std::string render_backend = "sdl";
+#else
+  std::string render_backend = "vulkan";
+#endif
   std::string diagnostic_bundle_file;
   Size size{1280, 720};
   uint32_t fps = 60;
+  // NVIDIA DLSS Frame Generation multiplier: 1 = off, 2..6 = output frames per
+  // captured frame (5x and 6x are experimental).
+  uint32_t frame_generation = 1;
   PixelFormat format = PixelFormat::Auto;
   uint32_t audio_buffer_ms = 5;
   uint32_t audio_quantum = 0;
@@ -63,5 +73,7 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options);
 void apply_latency_mode(CliOptions& options, const std::string& mode);
 std::vector<std::string> viewer_arguments(const CliOptions& options);
 void print_usage(const char* argv0);
+[[nodiscard]] uint32_t parse_frame_generation(const std::string& value);
+[[nodiscard]] std::string frame_generation_name(uint32_t multiplier);
 
 } // namespace cv

@@ -152,7 +152,7 @@ void init_default_profiles() {
                               "format = \"mjpeg\"\n"
                               "latency_mode = \"ultra\"\n"
                               "frame_pacing = \"immediate\"\n"
-                              "render_backend = \"sdl\"\n"
+                              "render_backend = \"vulkan\"\n"
                               "vsync = false\n"
                               "fullscreen = false\n"
                               "borderless = false\n"
@@ -170,7 +170,7 @@ void init_default_profiles() {
                            "format = \"mjpeg\"\n"
                            "latency_mode = \"low\"\n"
                            "frame_pacing = \"yield\"\n"
-                           "render_backend = \"sdl\"\n"
+                           "render_backend = \"vulkan\"\n"
                            "vsync = false\n"
                            "buffer_count = 3\n"
                            "audio_monitor = true\n"
@@ -256,8 +256,14 @@ void load_config(CliOptions& options) {
     } else if (key == "render_backend") {
       const std::string parsed = unquote(value);
       if (parsed == "sdl" || parsed == "opengl" || parsed == "vulkan") {
+#ifdef _WIN32
         options.render_backend = parsed;
+#else
+        options.render_backend = "vulkan";
+#endif
       }
+    } else if (key == "frame_generation") {
+      options.frame_generation = std::clamp(parse_u32_or(value, 1), 1U, 6U);
     } else if (key == "vsync") {
       options.vsync = parse_bool(value);
     } else if (key == "fullscreen") {
@@ -329,6 +335,7 @@ void save_config(const CliOptions& options) {
     file << "latency_mode = " << quote(options.latency_mode) << "\n";
     file << "frame_pacing = " << quote(options.frame_pacing) << "\n";
     file << "render_backend = " << quote(options.render_backend) << "\n";
+    file << "frame_generation = " << options.frame_generation << "\n";
     file << "vsync = " << (options.vsync ? "true" : "false") << "\n";
     file << "fullscreen = " << (options.fullscreen ? "true" : "false") << "\n";
     file << "borderless = " << (options.borderless ? "true" : "false") << "\n";

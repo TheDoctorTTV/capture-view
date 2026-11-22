@@ -2,6 +2,7 @@
 #include "frame.hpp"
 #include "v4l2_util.hpp"
 #include <atomic>
+#include <span>
 #include <string>
 
 namespace cv {
@@ -9,11 +10,20 @@ namespace cv {
 // Publication is last, so consumers can discard an overwritten slot without queuing.
 class PreviewWriter {
 public:
-  PreviewWriter(const std::string& path, Size size);
+  // `wanted`: whether the GUI shows the preview initially (--show-preview).
+  PreviewWriter(const std::string& path, Size size, bool wanted = true);
   ~PreviewWriter();
   PreviewWriter(const PreviewWriter&) = delete;
   PreviewWriter& operator=(const PreviewWriter&) = delete;
   void publish(const RgbaFrame& frame);
+  // Publishes a frame that is already BGRA (e.g. packed on the GPU).
+  void publish_bgra(std::span<const std::byte> pixels);
+  // Input = distinct game frames per second (repeats of a 30 fps game in a
+  // 60 Hz signal do not count); output = frames shown, including generated.
+  void set_rates(double input_fps, double output_fps);
+  // False while the GUI has "Show video in viewer" off; then no preview frames
+  // should be produced at all.
+  [[nodiscard]] bool wanted() const;
 private:
   UniqueFd fd_;
   std::byte* memory_ = nullptr;

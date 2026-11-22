@@ -1,0 +1,41 @@
+#version 450
+// Builds one level of the luma pyramid used for motion estimation.
+// mode 0: RGBA8 video frame -> luma at 1/factor resolution (box filter).
+// mode 1: luma level -> next (half) level.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D src_rgba;
+layout(set = 0, binding = 1, r32f) uniform readonly image2D src_luma;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D dst;
+
+layout(push_constant) uniform Params {
+  ivec2 src_size;
+  ivec2 dst_size;
+  uint mode;
+  uint factor; // mode 0 only: 2 or 4
+} pc;
+
+float luma_at(ivec2 p) {
+  p = clamp(p, ivec2(0), pc.src_size - 1);
+  if (pc.mode == 0u) {
+    return dot(imageLoad(src_rgba, p).rgb, vec3(0.299, 0.587, 0.114));
+  }
+  return imageLoad(src_luma, p).r;
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (p.x >= pc.dst_size.x || p.y >= pc.dst_size.y) {
+    return;
+  }
+  int f = pc.mode == 0u ? int(pc.factor) : 2;
+  ivec2 s = p * f;
+  float value = 0.0;
+  for (int y = 0; y < f; ++y) {
+    for (int x = 0; x < f; ++x) {
+      value += luma_at(s + ivec2(x, y));
+    }
+  }
+  value /= float(f * f);
+  imageStore(dst, p, vec4(value));
+}
