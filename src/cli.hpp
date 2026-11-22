@@ -13,6 +13,8 @@ struct CliOptions {
   bool doctor = false;
   bool diagnostic_bundle = false;
   bool gtk_ui = false;
+  bool gui_info = false;
+  bool save_only = false;
   bool wizard = false;
   bool save_config = false;
   bool list_profiles = false;
@@ -24,6 +26,8 @@ struct CliOptions {
   bool test_pattern = false;
   bool no_config = false;
   bool no_load_config = false;
+  bool system_tray = false;
+  bool show_preview = true;
   bool audio_monitor = false;
   bool audio_test_tone = false;
   bool audio_autotune = true;
@@ -31,6 +35,9 @@ struct CliOptions {
   uint32_t buffer_count = 3;
   std::string video_device = "/dev/video0";
   std::string video_output;
+  std::vector<std::string> video_outputs;
+  std::string preview_file;
+  uint32_t virtual_devices = 0;
   std::string video_output_format = "yuyv";
   std::string audio_input;
   std::string audio_output;

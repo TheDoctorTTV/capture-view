@@ -21,8 +21,8 @@ int main(int argc, char** argv) {
     cv::log::init(merged.log_file, merged.verbose);
     cv::log::info("capture-view start version=0.2.1");
     const int result = cv::run_app(merged);
-    if (!merged.no_config && !merged.gtk_ui &&
-        (merged.save_config ||
+    if (!merged.no_config && !merged.gtk_ui && !merged.gui_info &&
+        (merged.save_config || merged.save_only ||
          (!merged.diagnostic_bundle && !merged.list_profiles && !merged.init_profiles && !merged.doctor &&
           !merged.list_devices && !merged.list_audio && !merged.test_pattern))) {
       cv::save_config(merged);

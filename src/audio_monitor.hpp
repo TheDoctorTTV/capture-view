@@ -20,6 +20,7 @@ struct AudioConfig {
   float volume = 1.0F;
   bool muted = false;
   bool test_tone = false;
+  bool playback = true;
 };
 
 struct AudioStats {

@@ -229,6 +229,13 @@ int main() {
     test_cli_parses_capture_options();
     test_cli_rejects_invalid_size();
     test_h264_format_mapping();
+    const auto vulkan = parse({"capture-view", "--render-backend", "vulkan", "--audio-input", "default",
+                               "--audio-output", "default"});
+    auto args = cv::viewer_arguments(vulkan);
+    args.insert(args.begin(), "capture-view");
+    const auto child = parse(args);
+    require(child.render_backend == "vulkan" && child.audio_input == "default" && child.audio_output == "default",
+            "Vulkan or default audio selection was lost at viewer launch");
     test_ultra_latency_preset();
     test_rgba_to_output_formats_resize_buffers();
     test_padded_raw_frames();

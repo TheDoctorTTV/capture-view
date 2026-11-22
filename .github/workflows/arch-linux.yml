@@ -1,0 +1,33 @@
+name: Arch Linux compatibility
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install current Arch dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed
+          git cmake ninja pkgconf pipewire sdl3 libjpeg-turbo ffmpeg libglvnd rust clang libxkbcommon libxkbcommon-x11 fontconfig vulkan-icd-loader
+      - uses: actions/checkout@v4
+      - name: Report library versions
+        run: pkg-config --modversion sdl3 libavcodec libavutil libswscale libpipewire-0.3
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Test Rust settings and engine arguments
+        run: cargo test --locked --target-dir build/rust
+      - name: Check runtime library resolution
+        run: ./build/capture-view --no-config --help

@@ -83,7 +83,7 @@ void print_usage(const char* argv0) {
             << "  --list-audio\n"
             << "  --doctor\n"
             << "  --diagnostic-bundle PATH\n"
-            << "  --gtk\n"
+            << "  --gui (Rust / GPUI interface; --gtk is a compatibility alias)\n"
             << "  --wizard\n"
             << "  --save-config\n"
             << "  --list-profiles\n"
@@ -91,9 +91,13 @@ void print_usage(const char* argv0) {
             << "  --video /dev/video0\n"
             << "  --video-output /dev/video10\n"
             << "  --video-output-format yuyv|nv12|rgba|mjpeg\n"
-            << "  --audio-input \"name or id\"\n"
-            << "  --audio-output \"name or id\"\n"
+            << "  --video-outputs /dev/video20,/dev/video21\n"
+            << "  --virtual-devices 0..8 (GUI-managed outputs)\n"
+            << "  --audio-input \"name, id, or default\"\n"
+            << "  --audio-output \"name, id, or default\"\n"
             << "  --audio-virtual-source NAME\n"
+            << "  --system-tray / --no-system-tray (GUI only)\n"
+            << "  --show-preview / --hide-preview (embedded viewer only)\n"
             << "  --audio-monitor\n"
             << "  --no-audio-monitor\n"
             << "  --audio-test-tone\n"
@@ -103,7 +107,7 @@ void print_usage(const char* argv0) {
             << "  --format auto|h264|mjpeg|yuyv|nv12\n"
             << "  --latency-mode ultra|low|balanced\n"
             << "  --frame-pacing immediate|yield|sleep|adaptive\n"
-            << "  --render-backend sdl|opengl\n"
+            << "  --render-backend sdl|opengl|vulkan\n"
             << "  --fullscreen\n"
             << "  --borderless\n"
             << "  --no-vsync\n"
@@ -135,6 +139,7 @@ std::vector<std::string> viewer_arguments(const CliOptions& options) {
   args.insert(args.end(), {
       "--video", options.video_device, "--video-output", options.video_output,
       "--video-output-format", options.video_output_format,
+      "--virtual-devices", std::to_string(options.virtual_devices),
       "--size", std::to_string(options.size.width) + "x" + std::to_string(options.size.height),
       "--fps", std::to_string(options.fps), "--format", to_string(options.format),
       "--frame-pacing", options.frame_pacing, "--render-backend", options.render_backend,
@@ -157,6 +162,8 @@ std::vector<std::string> viewer_arguments(const CliOptions& options) {
   if (!options.audio_virtual_source.empty()) {
     args.insert(args.end(), {"--audio-virtual-source", options.audio_virtual_source});
   }
+  args.push_back(options.system_tray ? "--system-tray" : "--no-system-tray");
+  args.push_back(options.show_preview ? "--show-preview" : "--hide-preview");
   args.push_back(options.audio_monitor ? "--audio-monitor" : "--no-audio-monitor");
   return args;
 }
@@ -175,8 +182,12 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
     } else if (arg == "--diagnostic-bundle") {
       options.diagnostic_bundle = true;
       options.diagnostic_bundle_file = require_value(i, argc, argv, "--diagnostic-bundle");
-    } else if (arg == "--gtk") {
+    } else if (arg == "--gtk" || arg == "--gui") {
       options.gtk_ui = true;
+    } else if (arg == "--gui-info") {
+      options.gui_info = true;
+    } else if (arg == "--save-only") {
+      options.save_only = true;
     } else if (arg == "--wizard") {
       options.wizard = true;
     } else if (arg == "--save-config") {
@@ -207,6 +218,14 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
       options.profile = require_value(i, argc, argv, "--profile");
     } else if (arg == "--config") {
       options.config_file = require_value(i, argc, argv, "--config");
+    } else if (arg == "--system-tray") {
+      options.system_tray = true;
+    } else if (arg == "--no-system-tray") {
+      options.system_tray = false;
+    } else if (arg == "--show-preview") {
+      options.show_preview = true;
+    } else if (arg == "--hide-preview") {
+      options.show_preview = false;
     } else if (arg == "--audio-monitor") {
       options.audio_monitor = true;
     } else if (arg == "--no-audio-monitor") {
@@ -218,6 +237,19 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
       options.muted = true;
     } else if (arg == "--video") {
       options.video_device = require_value(i, argc, argv, "--video");
+    } else if (arg == "--preview-file") {
+      options.preview_file = require_value(i, argc, argv, "--preview-file");
+    } else if (arg == "--virtual-devices") {
+      options.virtual_devices = parse_u32(require_value(i, argc, argv, "--virtual-devices"), "virtual devices");
+      if (options.virtual_devices > 8) throw AppError("virtual device count must be between 0 and 8");
+    } else if (arg == "--video-outputs") {
+      const std::string values = require_value(i, argc, argv, "--video-outputs");
+      options.video_outputs.clear();
+      std::istringstream list(values);
+      for (std::string value; std::getline(list, value, ',');) {
+        if (!value.empty()) options.video_outputs.push_back(value);
+      }
+      if (options.video_outputs.size() > 8) throw AppError("at most 8 virtual video outputs are supported");
     } else if (arg == "--video-output") {
       options.video_output = require_value(i, argc, argv, "--video-output");
     } else if (arg == "--video-output-format") {
@@ -252,8 +284,8 @@ CliOptions parse_cli(int argc, char** argv, CliOptions options) {
       }
     } else if (arg == "--render-backend") {
       options.render_backend = require_value(i, argc, argv, "--render-backend");
-      if (options.render_backend != "sdl" && options.render_backend != "opengl") {
-        throw AppError("--render-backend must be sdl or opengl");
+      if (options.render_backend != "sdl" && options.render_backend != "opengl" && options.render_backend != "vulkan") {
+        throw AppError("--render-backend must be sdl, opengl, or vulkan");
       }
     } else if (arg == "--buffers") {
       options.buffer_count = parse_u32(require_value(i, argc, argv, "--buffers"), "buffers");

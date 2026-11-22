@@ -98,6 +98,11 @@ void V4l2Output::write_frame(FrameView frame) {
   write_frame(rgba_);
 }
 
+void V4l2Output::write_bytes(std::span<const std::byte> bytes) {
+  ++stats_.frames;
+  if (!write_all(fd_.get(), bytes)) ++stats_.dropped_writes;
+}
+
 void V4l2Output::open_device() {
   fd_.reset(::open(config_.device.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC));
   if (!fd_) {

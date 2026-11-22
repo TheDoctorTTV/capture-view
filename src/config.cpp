@@ -220,6 +220,8 @@ void load_config(CliOptions& options) {
 
     if (key == "video") {
       options.video_device = unquote(value);
+    } else if (key == "virtual_devices") {
+      options.virtual_devices = std::min(parse_u32_or(value, 0), 8U);
     } else if (key == "video_output") {
       options.video_output = unquote(value);
     } else if (key == "video_output_format") {
@@ -253,7 +255,7 @@ void load_config(CliOptions& options) {
       }
     } else if (key == "render_backend") {
       const std::string parsed = unquote(value);
-      if (parsed == "sdl" || parsed == "opengl") {
+      if (parsed == "sdl" || parsed == "opengl" || parsed == "vulkan") {
         options.render_backend = parsed;
       }
     } else if (key == "vsync") {
@@ -272,6 +274,10 @@ void load_config(CliOptions& options) {
       options.audio_quantum = parse_u32_or(value, options.audio_quantum);
     } else if (key == "audio_delay_ms") {
       options.audio_delay_ms = std::clamp(parse_i32_or(value, options.audio_delay_ms), -200, 200);
+    } else if (key == "system_tray") {
+      options.system_tray = parse_bool(value);
+    } else if (key == "show_preview") {
+      options.show_preview = parse_bool(value);
     } else if (key == "audio_monitor") {
       options.audio_monitor = parse_bool(value);
     } else if (key == "audio_autotune") {
@@ -310,6 +316,7 @@ void save_config(const CliOptions& options) {
     std::filesystem::permissions(temporary, permissions);
 
     file << "video = " << quote(options.video_device) << "\n";
+    file << "virtual_devices = " << options.virtual_devices << "\n";
     file << "video_output = " << quote(options.video_output) << "\n";
     file << "video_output_format = " << quote(options.video_output_format) << "\n";
     file << "audio_input = " << quote(options.audio_input) << "\n";
@@ -329,6 +336,8 @@ void save_config(const CliOptions& options) {
     file << "audio_buffer_ms = " << options.audio_buffer_ms << "\n";
     file << "audio_quantum = " << options.audio_quantum << "\n";
     file << "audio_delay_ms = " << options.audio_delay_ms << "\n";
+    file << "system_tray = " << (options.system_tray ? "true" : "false") << "\n";
+    file << "show_preview = " << (options.show_preview ? "true" : "false") << "\n";
     file << "audio_monitor = " << (options.audio_monitor ? "true" : "false") << "\n";
     file << "audio_autotune = " << (options.audio_autotune ? "true" : "false") << "\n";
     file << "muted = " << (options.muted ? "true" : "false") << "\n";

@@ -17,7 +17,7 @@ namespace {
 
 int run_test_pattern(CliOptions& options) {
   SdlRenderer renderer("capture-view test", options.size, options.fullscreen, options.borderless, options.vsync,
-                       options.render_backend == "opengl");
+                       options.render_backend == "opengl", options.render_backend == "vulkan");
 
   TestPattern pattern(options.size);
   bool running = true;

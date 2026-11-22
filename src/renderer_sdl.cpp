@@ -428,14 +428,16 @@ void draw_text(SDL_Renderer* renderer, float x, float y, const std::string& text
 
 } // namespace
 
-SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync, bool force_opengl)
+SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync,
+                         bool force_opengl, bool force_vulkan)
     : fullscreen_(fullscreen), borderless_(borderless), vsync_(vsync) {
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     throw AppError(std::string("SDL_Init failed: ") + SDL_GetError());
   }
 
   Uint32 flags = SDL_WINDOW_RESIZABLE;
-  flags |= SDL_WINDOW_OPENGL;
+  if (force_opengl) flags |= SDL_WINDOW_OPENGL;
+  if (force_vulkan) flags |= SDL_WINDOW_VULKAN;
   if (fullscreen_) {
     flags |= SDL_WINDOW_FULLSCREEN;
   }
@@ -456,10 +458,11 @@ SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool bor
   }
 
   if (!gl_ready_) {
-    renderer_ = SDL_CreateRenderer(window_, nullptr);
+    renderer_ = SDL_CreateRenderer(window_, force_vulkan ? "vulkan" : nullptr);
     if (renderer_ == nullptr) {
       throw AppError(std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
     }
+    log::info("renderer selected: ", SDL_GetRendererName(renderer_));
     set_vsync(vsync_);
     ensure_texture(size, SDL_PIXELFORMAT_RGBA32);
   }

@@ -75,8 +75,11 @@ static pw_properties* stream_props(const char* category, const char* role, const
                                    uint32_t quantum_frames, uint32_t rate, bool force_quantum) {
   pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, category,
                                            PW_KEY_MEDIA_ROLE, role, PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr);
-  if (!target.empty()) {
+  if (!target.empty() && target != "default") {
     pw_properties_set(props, PW_KEY_TARGET_OBJECT, target.c_str());
+  } else {
+    // Leave routing to the session manager, including subsequent default changes.
+    pw_properties_set(props, "state.restore-target", "false");
   }
   if (quantum_frames > 0) {
     const std::string latency = std::to_string(quantum_frames) + "/" + std::to_string(rate);
@@ -125,6 +128,9 @@ void AudioMonitor::start() {
     return;
   }
 
+  if (!config_.playback && config_.virtual_source_name.empty()) {
+    throw AppError("audio requires a playback output or a virtual source");
+  }
   pw_init(nullptr, nullptr);
   loop_ = pw_thread_loop_new("capture-view-audio", nullptr);
   if (loop_ == nullptr) {
@@ -163,10 +169,12 @@ void AudioMonitor::start() {
                            stream_props("Capture", "Production", config_.input_name, quantum_frames_, sample_rate_,
                                         config_.quantum_frames != 0), input_listener_, kInputEvents);
   }
+  if (config_.playback) {
   output_ = create_stream(
       "capture-view audio output",
       stream_props("Playback", "Game", config_.output_name, quantum_frames_, sample_rate_, config_.quantum_frames != 0),
       output_listener_, kOutputEvents);
+  }
   if (!config_.virtual_source_name.empty()) {
     virtual_source_ = create_stream(
         "capture-view virtual source",
@@ -189,7 +197,7 @@ void AudioMonitor::start() {
       throw AppError("audio input pw_stream_connect failed");
     }
   }
-  if (pw_stream_connect(output_, PW_DIRECTION_OUTPUT, PW_ID_ANY, static_cast<pw_stream_flags>(output_flags), params,
+  if (output_ != nullptr && pw_stream_connect(output_, PW_DIRECTION_OUTPUT, PW_ID_ANY, static_cast<pw_stream_flags>(output_flags), params,
                         1) < 0) {
     throw AppError("audio output pw_stream_connect failed");
   }
@@ -199,7 +207,7 @@ void AudioMonitor::start() {
   }
 
 #if PW_CHECK_VERSION(1, 1, 0)
-  const auto* processing_loop = pw_stream_get_data_loop(output_);
+  const auto* processing_loop = pw_stream_get_data_loop(output_ != nullptr ? output_ : virtual_source_);
   if (processing_loop == nullptr || (input_ != nullptr && pw_stream_get_data_loop(input_) != processing_loop) ||
       (virtual_source_ != nullptr && pw_stream_get_data_loop(virtual_source_) != processing_loop)) {
     throw AppError("audio streams did not share a processing loop");
@@ -395,7 +403,7 @@ void AudioMonitor::virtual_source_process() {
 
 void AudioMonitor::write_samples(const float* samples, uint32_t frames) {
   for (uint32_t frame = 0; frame < frames; ++frame) {
-    const uint64_t oldest = virtual_source_ == nullptr ? read_frame_ : std::min(read_frame_, virtual_read_frame_);
+    const uint64_t oldest = output_ == nullptr ? virtual_read_frame_ : virtual_source_ == nullptr ? read_frame_ : std::min(read_frame_, virtual_read_frame_);
     if (write_frame_ - oldest >= capacity_frames_) {
       const uint64_t buffered = write_frame_ - oldest;
       const uint64_t keep = std::min<uint64_t>(target_delay_frames_, capacity_frames_ / 2U);
@@ -465,7 +473,7 @@ void AudioMonitor::write_test_tone(float* samples, uint32_t frames) {
 }
 
 uint32_t AudioMonitor::buffered_frames_unlocked() const {
-  return static_cast<uint32_t>(std::min<uint64_t>(write_frame_ - read_frame_, capacity_frames_));
+  return static_cast<uint32_t>(std::min<uint64_t>(write_frame_ - (output_ == nullptr ? virtual_read_frame_ : read_frame_), capacity_frames_));
 }
 
 void AudioMonitor::publish_stats() {

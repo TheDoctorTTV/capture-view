@@ -4,7 +4,8 @@
 #include "audio_monitor.hpp"
 #include "audio_selector.hpp"
 #include "config.hpp"
-#include "gtk_ui.hpp"
+#include "gui_bridge.hpp"
+#include "embedded_capture.hpp"
 #include "h264_decoder.hpp"
 #include "log.hpp"
 #include "mjpeg_decoder.hpp"
@@ -489,7 +490,7 @@ int run_doctor(const CliOptions& options) {
 int run_test_pattern(CliOptions& options) {
   const bool audio_available = select_audio_devices_if_needed(options);
   SdlRenderer renderer(make_title(options) + " test", options.size, options.fullscreen, options.borderless,
-                       options.vsync, options.render_backend == "opengl");
+                       options.vsync, options.render_backend == "opengl", options.render_backend == "vulkan");
   std::unique_ptr<V4l2Output> video_output;
   if (!options.video_output.empty()) {
     video_output = std::make_unique<V4l2Output>(
@@ -579,7 +580,7 @@ int run_capture(CliOptions& options) {
   }
 
   SdlRenderer renderer(make_title(options), capture->size(), options.fullscreen, options.borderless, options.vsync,
-                       options.render_backend == "opengl");
+                       options.render_backend == "opengl", options.render_backend == "vulkan");
   std::unique_ptr<V4l2Output> video_output;
   if (!options.video_output.empty()) {
     video_output = std::make_unique<V4l2Output>(
@@ -729,8 +730,10 @@ int run_capture(CliOptions& options) {
 } // namespace
 
 int run_app(CliOptions& options) {
+  if (options.gui_info) return write_gui_info(options);
+  if (options.save_only) return 0;
   if (options.gtk_ui) {
-    return run_gtk_ui(options);
+    return run_gpui_ui(options);
   }
   if (options.wizard) {
     run_wizard(options);
@@ -757,6 +760,7 @@ int run_app(CliOptions& options) {
     print_audio_devices(list_audio_devices());
     return 0;
   }
+  if (!options.preview_file.empty()) return run_embedded_capture(options, capture_attempts(options));
   if (options.test_pattern) {
     return run_test_pattern(options);
   }

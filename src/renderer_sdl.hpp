@@ -15,7 +15,7 @@ struct RenderStats {
 
 class SdlRenderer {
 public:
-  SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync, bool force_opengl);
+  SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync, bool force_opengl, bool force_vulkan = false);
   ~SdlRenderer();
 
   SdlRenderer(const SdlRenderer&) = delete;

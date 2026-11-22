@@ -64,8 +64,10 @@ std::optional<VideoDeviceInfo> inspect_device(const std::filesystem::path& path)
     return std::nullopt;
   }
 
-  if ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) == 0 &&
-      (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) == 0) {
+  const uint32_t capabilities = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) != 0
+                                    ? cap.device_caps : cap.capabilities;
+  if ((capabilities & V4L2_CAP_VIDEO_CAPTURE) == 0 &&
+      (capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) == 0) {
     return std::nullopt;
   }
 

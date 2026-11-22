@@ -31,7 +31,7 @@ pw_context* shared_context = nullptr;
 bool mismatched_loop = false;
 int starts = 0;
 
-void test_startup(bool tone, size_t fail, bool mismatch = false) {
+void test_startup(bool tone, size_t fail, bool mismatch = false, bool defaults = false) {
   streams = {};
   created = destroyed = 0;
   contexts = 0;
@@ -40,6 +40,8 @@ void test_startup(bool tone, size_t fail, bool mismatch = false) {
   starts = 0;
   cv::AudioConfig config;
   config.test_tone = tone;
+  config.input_name = defaults ? "default" : "test-capture";
+  config.output_name = defaults ? "default" : "test-speakers";
   config.virtual_source_name = "Capture View";
   bool threw = false;
   {
@@ -48,6 +50,19 @@ void test_startup(bool tone, size_t fail, bool mismatch = false) {
     require(threw == (fail != 0 || mismatch), "startup did not enforce stream allocation and loop identity");
     require(starts == (threw ? 0 : 1), "audio started before its processing loop was verified");
     if (!threw) {
+      const auto* output = streams[tone ? 0 : 1].props;
+      const char* target = pw_properties_get(output, PW_KEY_TARGET_OBJECT);
+      require(defaults ? target == nullptr : target != nullptr && std::string(target) == "test-speakers",
+              "system default was treated as a named device, or explicit output was lost");
+      if (defaults) {
+        const char* restore = pw_properties_get(output, "state.restore-target");
+        require(restore != nullptr && std::string(restore) == "false", "default output can restore a stale route");
+      }
+      if (!tone) {
+        const char* input = pw_properties_get(streams[0].props, PW_KEY_TARGET_OBJECT);
+        require(defaults ? input == nullptr : input != nullptr && std::string(input) == "test-capture",
+                "system default input was pinned or explicit capture input was lost");
+      }
       const size_t expected = tone ? 2U : 3U;
       require(created == expected && contexts == 1, "audio did not use one shared context");
       for (size_t i = 0; i < created; ++i) {
@@ -153,6 +168,8 @@ extern "C" int __wrap_pw_thread_loop_start(pw_thread_loop*) { ++starts; return 0
 int main() {
   try {
     test_startup(false, 0);
+    test_startup(false, 0, false, true);
+    test_startup(true, 0, false, true);
     test_startup(true, 0);
     test_startup(false, 2);
     test_startup(false, 3);

@@ -18,7 +18,8 @@ double elapsed_ms(Clock::time_point start, Clock::time_point end) {
 
 } // namespace
 
-SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync, bool force_opengl)
+SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool borderless, bool vsync,
+                         bool force_opengl, bool force_vulkan)
     : fullscreen_(fullscreen), borderless_(borderless), vsync_(vsync) {
   if (force_opengl) {
     log::warning("OpenGL renderer is not available in the Windows build; using "
@@ -40,7 +41,7 @@ SdlRenderer::SdlRenderer(std::string title, Size size, bool fullscreen, bool bor
     SDL_SetWindowFullscreen(window_, true);
   }
 
-  renderer_ = SDL_CreateRenderer(window_, nullptr);
+  renderer_ = SDL_CreateRenderer(window_, force_vulkan ? "vulkan" : nullptr);
   if (renderer_ == nullptr) {
     throw AppError(std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
   }

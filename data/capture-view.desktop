@@ -2,7 +2,7 @@
 Type=Application
 Name=Capture View
 Comment=Low-latency HDMI USB capture-card viewer
-Exec=capture-view --gtk
+Exec=capture-view-gui
 Icon=capture-view
 Terminal=false
 Categories=AudioVideo;Video;

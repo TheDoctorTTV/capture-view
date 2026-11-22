@@ -31,6 +31,7 @@ public:
 
   void write_frame(const RgbaFrame& frame);
   void write_frame(FrameView frame);
+  void write_bytes(std::span<const std::byte> bytes);
   [[nodiscard]] V4l2OutputStats stats() const { return stats_; }
 
 private:

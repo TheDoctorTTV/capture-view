@@ -22,8 +22,8 @@ Print troubleshooting information.
 .B --wizard
 Run interactive setup wizard and start viewer with selected settings.
 .TP
-.B --gtk
-Open a minimal GTK launcher for selecting common viewer settings and starting the SDL viewer.
+.B --gui
+Open the native Rust / GPUI interface with an embedded Viewer page, virtual capture outputs, audio routing, settings, and logs. --gtk is accepted as a compatibility alias.
 .TP
 .BI --diagnostic-bundle " PATH"
 Write doctor output, video modes, audio nodes, and last config to PATH.
@@ -64,7 +64,7 @@ Apply preset buffer/vsync/audio-buffer settings.
 .BI --frame-pacing " immediate|yield|sleep|adaptive"
 Choose render-loop pacing. immediate never waits, yield gives the scheduler a chance after each frame, sleep targets requested FPS, adaptive sleeps then yields near the target present time.
 .TP
-.BI --render-backend " sdl|opengl"
+.BI --render-backend " sdl|opengl|vulkan"
 Choose SDL texture presentation or explicit OpenGL shader presentation. The OpenGL backend converts raw YUYV/NV12 on the GPU.
 .TP
 .B --borderless
@@ -118,3 +118,11 @@ Config is stored at
 .I ~/.config/lowlat-capture-viewer/config.toml
 unless disabled with
 .B --no-config.
+
+.SH VIRTUAL CAPTURE OUTPUTS
+The GUI's virtual-device count setting creates Capture View 1 through Capture View 8.
+Device setup requests system authorization once per count change and installs a
+systemd service to restore the selected outputs after reboot. The GUI and engine
+run as the desktop user. Receiving apps select Capture View Audio for sound.
+The embedded Viewer page has fullscreen controls; F/F11 toggle fullscreen and
+Escape exits it. The CLI fullscreen and borderless flags apply only to standalone SDL viewing.
